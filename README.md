@@ -25,6 +25,9 @@ in 8 languages.
 5. **Side finding: in Danish, Norwegian and Icelandic, Mimir often skips the reasoning.** It answers
    straight away with `\boxed{…}` in 32% / 52% / 35% of cases, and those answers are mostly wrong (17–22%).
    When it does reason, it gets 89% / 93% / 40% right. It never does this in English.
+6. **Relying less on the prior helps only by fixing that habit** (§6). Subtracting a little prior at the output
+   (Δλ = −0.5) raises accuracy by 4 points overall (dan +11, nob +11, eng ±0, deu −6). Almost all of the gain comes
+   from fewer direct answers. On problems Mimir already reasons through, it does not help and sometimes hurts.
 
 ## Setup
 
@@ -115,11 +118,63 @@ the same norm does not. This matches the paper's Fig. 4. At the first token of t
 confident: it only changes at extreme values. At λ\* = −2, the probability of the original answer token drops from
 0.90 to 0.09.
 
+### 6. Does relying less on the prior improve accuracy?
+
+We steer during generation: on every forward pass, we shift a module output along the mixed-language `d_prior` by Δλ
+(`src/steer_gsm.py`). We do this for eng, dan, nob and deu, 200 problems each, scored against the unsteered run
+(`final:0`) on the same 800 problems.
+
+* `final:Δ` shifts the final prediction state. This is exactly `logits + Δ·W d_prior ≈ logits + Δ·log p_unigram`, i.e.
+  a tempered subtraction of the prior (Δ < 0), much like PMI or contrastive decoding.
+* `h1:Δ` shifts the output of the first H-module application. That change flows through the second cycle, so it is an
+  internal intervention rather than a logit transform.
+* `random:-0.5` is a control: a random direction with the same norm.
+
+![steering accuracy](figures/steer_accuracy.png)
+
+| config | eng | dan | nob | deu | all | Δ vs baseline (wins↑/losses↓) | McNemar p | direct-answer rate |
+|---|---|---|---|---|---|---|---|---|
+| final:−1 | 0.485 | 0.555 | 0.385 | 0.295 | 0.430 | −0.276 (60↑/281↓) | 3e‑35 | 0.00 |
+| final:−0.5 | 0.915 | **0.785** | **0.655** | 0.630 | **0.746** | **+0.040** (96↑/64↓) | 0.014 | 0.08 |
+| final:−0.25 | **0.945** | 0.745 | 0.600 | 0.655 | 0.736 | +0.030 (58↑/34↓) | 0.016 | 0.14 |
+| **final:0 (baseline)** | 0.915 | 0.675 | 0.545 | **0.690** | 0.706 | – | – | 0.21 |
+| final:+0.5 | 0.885 | 0.645 | 0.585 | 0.560 | 0.669 | −0.038 (57↑/87↓) | 0.015 | 0.19 |
+| h1:−0.25 | 0.920 | 0.625 | 0.420 | 0.675 | 0.660 | −0.046 (14↑/51↓) | 4e‑6 | 0.26 |
+| h1:−0.5 | 0.915 | 0.495 | 0.360 | 0.665 | 0.609 | −0.098 (16↑/94↓) | 1e‑14 | 0.33 |
+| random:−0.5 | 0.920 | 0.695 | 0.515 | 0.635 | 0.691 | −0.015 (35↑/47↓) | 0.22 | 0.19 |
+
+Accuracy split by what the baseline did on each problem:
+
+| config | dan: baseline reasoned (n=136) | dan: baseline answered directly (n=64) | nob: reasoned (n=97) | nob: directly (n=103) | deu (n=199) |
+|---|---|---|---|---|---|
+| final:0 | 0.890 | 0.219 | 0.928 | 0.184 | 0.693 |
+| final:−0.25 | 0.897 | 0.422 | 0.866 | 0.350 | 0.658 |
+| final:−0.5 | 0.882 | 0.578 | 0.835 | 0.485 | 0.633 |
+
+**Answer: only partly, and not for the reason you might hope.**
+
+* A mild prior subtraction at the output (Δ = −0.25 to −0.5) raises accuracy by 3–4 points (p ≈ 0.015). A random
+  direction with the same norm does not (−1.5, n.s.), and adding prior (+0.5) hurts. So the effect is specific to
+  `d_prior`.
+* Almost all of the gain comes from one failure mode: answering directly without reasoning. In Danish this drops from
+  32% to 9%, and in Norwegian from 52% to 22%. Problems the baseline answered directly go from 22% → 58% correct (dan)
+  and 18% → 49% (nob).
+* On problems the baseline already reasoned through, removing prior does **not** help. Danish is flat (0.89 → 0.88),
+  English gains a little (+3 at −0.25), and Norwegian (−9) and German (−6) get *worse*. Pushing harder (Δ = −1)
+  breaks the model in every language (43%).
+* Lowering prior *inside* the recurrence (after H1) hurts, and it *increases* direct answering (dan 32% → 56%).
+* Read the per-Δ numbers with care: Δ was chosen on the same 200 problems per language that it is evaluated on, with
+  no held-out split. The sign pattern is consistent across Δ = −0.25 and −0.5, though.
+
+Bottom line: steering λ is a cheap decoding-time fix for Mimir's "skip the reasoning" habit in Danish and Norwegian
+(+11 points on both, unchanged English). It does not make Mimir reason better. When Mimir reasons, the small amount of
+prior it uses is not what holds it back.
+
 ## Reproduce
 
 ```bash
 uv sync
-bash run.sh          # ≈1.5 h on 4× Quadro RTX 8000; writes results/ and figures/
+bash run.sh          # ≈1.5 h + ≈4 h for §6 on 4× Quadro RTX 8000
 uv run src/analyze.py  # only re-aggregates (no GPU): tables + figures from results/
 ```
 
@@ -129,6 +184,8 @@ uv run src/analyze.py  # only re-aggregates (no GPU): tables + figures from resu
 | `src/fit_prior.py` | OLS fit of `d_prior`, R², nKL, random-init control, support sweep |
 | `src/run_gsm.py` | generate, score, teacher-force with hooks on every L/H application, control and steering |
 | `src/analyze.py` | tables (`results/summary.json`) and `figures/` |
+| `src/steer_gsm.py` | GSM evaluation while steering along `d_prior` (§6) |
+| `src/analyze_steer.py` | §6 tables (`results/steer_summary.json`) and `figures/steer_accuracy.png` |
 
 All raw generations are in `results/gsm/<lang>.jsonl`, and per-token λ / entropy / KL are in `results/gsm/<lang>.npz`.
 
