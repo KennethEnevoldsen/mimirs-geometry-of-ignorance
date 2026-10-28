@@ -24,3 +24,9 @@ uv run src/steer_gsm.py --lang nob --device cuda:2 --configs $C &
 uv run src/steer_gsm.py --lang deu --device cuda:3 --configs $C &
 wait
 uv run src/analyze_steer.py
+
+# §7: EuroEval, baseline and two doses of the intervention (≈80 min each on one GPU)
+./src/run_euroeval.sh 0     results/euroeval/base
+./src/run_euroeval.sh -0.25 results/euroeval/m025
+./src/run_euroeval.sh -0.5  results/euroeval/m05
+uv run src/analyze_euroeval.py results/euroeval/base results/euroeval/m025 results/euroeval/m05

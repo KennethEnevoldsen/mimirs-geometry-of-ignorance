@@ -1,4 +1,5 @@
-.venv/
+.venv*/
+.euroeval_cache/
 __pycache__/
 logs/
 papers/

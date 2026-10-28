@@ -25,6 +25,10 @@ in 8 languages.
 5. **Side finding: in Danish, Norwegian and Icelandic, Mimir often skips the reasoning.** It answers
    straight away with `\boxed{…}` in 32% / 52% / 35% of cases, and those answers are mostly wrong (17–22%).
    When it does reason, it gets 89% / 93% / 40% right. It never does this in English.
+7. **On EuroEval it is a wash overall, and task-dependent** (§7). At Δλ = −0.25 / −0.5 the mean change over 27
+   Danish+English datasets is +0.7 / −0.0 points (11W/12L and 11W/15L). Zebra puzzles (+6.3 / +7.4) and NER
+   (+1.6 / +2.3) improve at both doses; reading comprehension (−1.1 / −4.8), translation (+0.5 / −2.1) and
+   tool-calling (−0.4 / −1.4) get worse.
 6. **Relying less on the prior helps only by fixing that habit** (§6). Subtracting a little prior at the output
    (Δλ = −0.5) raises accuracy by 4 points overall (dan +11, nob +11, eng ±0, deu −6). Almost all of the gain comes
    from fewer direct answers. On problems Mimir already reasons through, it does not help and sometimes hurts.
@@ -170,11 +174,60 @@ Bottom line: steering λ is a cheap decoding-time fix for Mimir's "skip the reas
 (+11 points on both, unchanged English). It does not make Mimir reason better. When Mimir reasons, the small amount of
 prior it uses is not what holds it back.
 
+### 7. Does it improve EuroEval? Mostly no, except on tasks that need reasoning
+
+EuroEval 18.3.0, Mimir v1, zero-shot, validation split, 1 iteration, only on the Danish and English
+datasets (29 benchmarks, 27 scored: IFEval-da and IFEval errored on invalid output). Baseline vs. the same
+run with the final-state intervention at Δλ = −0.25 and −0.5. The intervention is applied inside vLLM by
+patching `HrmTextForCausalLM.compute_logits`, which adds `Δ·W d_prior` to the logits. This is the same
+operation as the HF hook in §6, and it also reaches the log-probabilities used to score multiple-choice
+answers (`src/patch/sitecustomize.py`, `src/run_euroeval.sh`).
+
+| task | n | Δ (−0.25) | Δ (−0.5) |
+|---|---|---|---|
+| logical-reasoning (zebra puzzles) | 2 | **+6.32** | **+7.36** |
+| named-entity-recognition | 2 | +1.55 | +2.33 |
+| european-values | 2 | +1.88 | +0.84 |
+| summarization | 2 | +1.27 | +0.10 |
+| sentiment-classification | 2 | +0.39 | −0.19 |
+| common-sense-reasoning | 2 | +0.05 | +1.15 |
+| linguistic-acceptability | 2 | +0.19 | −0.48 |
+| knowledge | 3 | +0.25 | −0.96 |
+| hallucination | 2 | −0.20 | −0.35 |
+| tool-calling | 2 | −0.40 | −1.38 |
+| reading-comprehension | 2 | −1.09 | −4.83 |
+| translation | 2 | +0.47 | −2.10 |
+| word-in-context | 1 | −3.35 | −2.51 |
+| **all** | 27 | **+0.68** (11W/4T/12L) | **−0.02** (11W/1T/15L) |
+
+Largest single moves (Δ = −0.5): zebra-puzzles-easy-da 50.8 → 60.4, dansk (NER) 44.0 → 47.4, multi-wiki-qa-da
+80.9 → 73.0, flores-en-da 64.5 → 60.3.
+
+**Answer: no, a small threshold does not improve overall EuroEval performance.** The mean is within noise at
+both doses (+0.7 and −0.0 points, wins ≈ losses). What does move is consistent across the two doses and
+sensible:
+
+* Tasks where the model has to *construct* an answer token by token from a puzzle get better and better as more
+  prior is removed: zebra puzzles +6.3 → +7.4 (da +7.4 → +9.6), NER +1.6 → +2.3. These are the same tasks where
+  the model is least able to lean on high-frequency continuations.
+* Tasks that are mostly faithful copying or where the frequent continuation *is* the right answer get worse with
+  more removal: reading comprehension −1.1 → −4.8, translation +0.5 → −2.1, tool-calling −0.4 → −1.4,
+  word-in-context −3.4.
+
+So the prior direction is not a free win: it trades "stop guessing the frequent thing" against "keep the answer
+grounded in the input". The dose-response (same sign, larger at −0.5) is the reason to believe the task-level
+effects; the aggregate is not evidence of anything.
+
+Caveat on absolute numbers: vLLM's `hrm_text` implementation does not apply Mimir's PrefixLM attention mask, so
+every number above (both arms) is measured with a strictly causal mask, which is not the input distribution the
+model card specifies. DANSK, for instance, scores 44.0 F1 here against ~96 in the Mimir report. The
+baseline/steered contrast is unaffected, but the levels are not comparable to published EuroEval numbers.
+
 ## Reproduce
 
 ```bash
 uv sync
-bash run.sh          # ≈1.5 h + ≈4 h for §6 on 4× Quadro RTX 8000
+bash run.sh          # ≈1.5 h + ≈4 h for §6 on 4× Quadro RTX 8000; §7 is ≈80 min per EuroEval arm on 1 GPU
 uv run src/analyze.py  # only re-aggregates (no GPU): tables + figures from results/
 ```
 
@@ -186,6 +239,10 @@ uv run src/analyze.py  # only re-aggregates (no GPU): tables + figures from resu
 | `src/analyze.py` | tables (`results/summary.json`) and `figures/` |
 | `src/steer_gsm.py` | GSM evaluation while steering along `d_prior` (§6) |
 | `src/analyze_steer.py` | §6 tables (`results/steer_summary.json`) and `figures/steer_accuracy.png` |
+| `src/make_logit_shift.py` | precompute `W d_prior` (§7) |
+| `src/patch/sitecustomize.py` | injects the intervention into vLLM's `compute_logits` for EuroEval |
+| `src/run_euroeval.sh` | EuroEval run with/without the intervention (`results/euroeval/`) |
+| `src/analyze_euroeval.py` | §7 comparison table (`results/euroeval/comparison.md`) |
 
 All raw generations are in `results/gsm/<lang>.jsonl`, and per-token λ / entropy / KL are in `results/gsm/<lang>.npz`.
 
